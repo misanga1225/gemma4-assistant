@@ -1,0 +1,46 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Assistant",
+  "version": "0.1.0",
+  "identifier": "com.assistant.girlfriend",
+  "build": {
+    "frontendDist": "../src"
+  },
+  "bundle": {
+    "resources": {
+      "../personality.json": "personality.json"
+    }
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "mascot",
+        "url": "mascot.html",
+        "width": 200,
+        "height": 240,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "resizable": false,
+        "skipTaskbar": true,
+        "shadow": false
+      },
+      {
+        "label": "chat",
+        "url": "chat.html",
+        "width": 380,
+        "height": 500,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "visible": false,
+        "skipTaskbar": true,
+        "shadow": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  }
+}

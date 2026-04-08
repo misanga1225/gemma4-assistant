@@ -1,2 +1,13 @@
 /target
+/src-tauri/target
+node_modules/
 CLAUDE.md
+personality.json
+
+# テスト用リクエスト
+req*.json
+
+# 立ち絵・アイコン（個人素材）
+src/assets/character/*.png
+src-tauri/icons/icon.png
+src-tauri/icons/icon.ico

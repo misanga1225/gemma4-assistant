@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Chat</title>
+  <link rel="stylesheet" href="chat.css" />
+</head>
+<body>
+  <div id="chat-panel">
+    <div id="titlebar" data-tauri-drag-region>
+      <h1 id="chat-title">Assistant</h1>
+      <div id="titlebar-controls">
+        <span id="status">未接続</span>
+        <button id="close-btn" title="閉じる">&times;</button>
+      </div>
+    </div>
+    <div id="messages"></div>
+    <div id="input-area">
+      <textarea id="input" placeholder="メッセージを入力..." rows="1"></textarea>
+      <button id="send">送信</button>
+    </div>
+  </div>
+  <script src="chat.js"></script>
+</body>
+</html>
