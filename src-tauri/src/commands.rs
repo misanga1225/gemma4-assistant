@@ -1,6 +1,6 @@
-use base64::Engine;
-use crate::AppState;
 use crate::voicevox::VoicevoxClient;
+use crate::AppState;
+use base64::Engine;
 use futures::StreamExt;
 use ollama_rs::generation::chat::{request::ChatMessageRequest, ChatMessage};
 use std::sync::Arc;
@@ -25,10 +25,13 @@ fn spawn_synthesis(
             Ok(wav_bytes) => {
                 let b64 = base64::engine::general_purpose::STANDARD.encode(&wav_bytes);
                 // index付きで送り、フロントエンドで順序再生
-                let _ = app.emit("chat-voice", serde_json::json!({
-                    "index": index,
-                    "audio": b64,
-                }));
+                let _ = app.emit(
+                    "chat-voice",
+                    serde_json::json!({
+                        "index": index,
+                        "audio": b64,
+                    }),
+                );
             }
             Err(e) => {
                 eprintln!("[voicevox] 文#{} 合成失敗: {}", index, e);
@@ -150,9 +153,12 @@ pub async fn send_message(
     }
 
     // 合成完了通知（文の総数をフロントエンドに伝える）
-    let _ = app.emit("chat-complete", serde_json::json!({
-        "voice_count": synth_tasks.len(),
-    }));
+    let _ = app.emit(
+        "chat-complete",
+        serde_json::json!({
+            "voice_count": synth_tasks.len(),
+        }),
+    );
 
     // 合成タスクの完了を待つ（emitは各タスク内で行われる）
     for task in synth_tasks {
