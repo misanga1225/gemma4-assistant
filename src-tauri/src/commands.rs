@@ -1,7 +1,41 @@
+use base64::Engine;
 use crate::AppState;
+use crate::voicevox::VoicevoxClient;
 use futures::StreamExt;
 use ollama_rs::generation::chat::{request::ChatMessageRequest, ChatMessage};
+use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
+use tokio::sync::Mutex;
+
+/// 文の区切り文字で分割するためのヘルパー
+fn is_sentence_end(c: char) -> bool {
+    matches!(c, '。' | '！' | '？' | '!' | '?' | '\n')
+}
+
+/// 文が完成したらVOICEVOX合成タスクをspawnする
+fn spawn_synthesis(
+    vv: Arc<Mutex<VoicevoxClient>>,
+    app: AppHandle,
+    sentence: String,
+    index: usize,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let client = vv.lock().await;
+        match client.synthesize(&sentence).await {
+            Ok(wav_bytes) => {
+                let b64 = base64::engine::general_purpose::STANDARD.encode(&wav_bytes);
+                // index付きで送り、フロントエンドで順序再生
+                let _ = app.emit("chat-voice", serde_json::json!({
+                    "index": index,
+                    "audio": b64,
+                }));
+            }
+            Err(e) => {
+                eprintln!("[voicevox] 文#{} 合成失敗: {}", index, e);
+            }
+        }
+    })
+}
 
 #[tauri::command]
 pub async fn ping_ollama(state: State<'_, AppState>) -> Result<String, String> {
@@ -37,6 +71,16 @@ pub async fn send_message(
 
     let mut full_response = String::new();
     let mut completed = false;
+
+    // 文単位のVOICEVOX合成タスク管理
+    let vv_available = {
+        let vv = state.voicevox.lock().await;
+        vv.speaker_id.is_some()
+    };
+    let mut sentence_buf = String::new();
+    let mut sentence_index: usize = 0;
+    let mut synth_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+
     while let Some(chunk) = stream.next().await {
         match chunk {
             Ok(res) => {
@@ -44,6 +88,25 @@ pub async fn send_message(
                 if !token.is_empty() {
                     full_response.push_str(token);
                     let _ = app.emit("chat-token", token.clone());
+
+                    // 文単位でVOICEVOX合成をキック
+                    if vv_available {
+                        sentence_buf.push_str(token);
+                        if token.chars().any(is_sentence_end) {
+                            let sentence = sentence_buf.trim().to_string();
+                            if !sentence.is_empty() {
+                                let task = spawn_synthesis(
+                                    state.voicevox.clone(),
+                                    app.clone(),
+                                    sentence,
+                                    sentence_index,
+                                );
+                                synth_tasks.push(task);
+                                sentence_index += 1;
+                            }
+                            sentence_buf.clear();
+                        }
+                    }
                 }
 
                 if res.done {
@@ -60,6 +123,20 @@ pub async fn send_message(
         }
     }
 
+    // 残りのバッファも合成
+    if vv_available {
+        let sentence = sentence_buf.trim().to_string();
+        if !sentence.is_empty() {
+            let task = spawn_synthesis(
+                state.voicevox.clone(),
+                app.clone(),
+                sentence,
+                sentence_index,
+            );
+            synth_tasks.push(task);
+        }
+    }
+
     if !completed {
         let error_message = "応答ストリームが途中で終了しました".to_string();
         let _ = app.emit("chat-error", error_message.clone());
@@ -71,7 +148,16 @@ pub async fn send_message(
         history.push(user_msg);
         history.push(ChatMessage::assistant(full_response));
     }
-    let _ = app.emit("chat-complete", ());
+
+    // 合成完了通知（文の総数をフロントエンドに伝える）
+    let _ = app.emit("chat-complete", serde_json::json!({
+        "voice_count": synth_tasks.len(),
+    }));
+
+    // 合成タスクの完了を待つ（emitは各タスク内で行われる）
+    for task in synth_tasks {
+        let _ = task.await;
+    }
 
     Ok(())
 }
