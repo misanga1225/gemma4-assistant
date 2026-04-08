@@ -17,24 +17,12 @@
       {
         "label": "mascot",
         "url": "mascot.html",
-        "width": 200,
-        "height": 240,
+        "width": 420,
+        "height": 360,
         "decorations": false,
         "transparent": true,
         "alwaysOnTop": true,
         "resizable": false,
-        "skipTaskbar": true,
-        "shadow": false
-      },
-      {
-        "label": "chat",
-        "url": "chat.html",
-        "width": 380,
-        "height": 500,
-        "decorations": false,
-        "transparent": true,
-        "alwaysOnTop": true,
-        "visible": false,
         "skipTaskbar": true,
         "shadow": false
       }

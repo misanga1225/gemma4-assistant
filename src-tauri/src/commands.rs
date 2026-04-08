@@ -27,8 +27,8 @@ pub async fn send_message(
         messages.push(user_msg.clone());
         messages
     };
-    let request = ChatMessageRequest::new(state.config.model.clone(), request_messages);
-
+    let request =
+        ChatMessageRequest::new(state.config.model.clone(), request_messages).think(false);
     let mut stream = state
         .ollama
         .send_chat_messages_stream(request)
@@ -37,20 +37,22 @@ pub async fn send_message(
 
     let mut full_response = String::new();
     let mut completed = false;
-
     while let Some(chunk) = stream.next().await {
         match chunk {
             Ok(res) => {
                 let token = &res.message.content;
-                full_response.push_str(token);
-                let _ = app.emit("chat-token", token.clone());
+                if !token.is_empty() {
+                    full_response.push_str(token);
+                    let _ = app.emit("chat-token", token.clone());
+                }
 
                 if res.done {
                     completed = true;
                     break;
                 }
             }
-            Err(_) => {
+            Err(e) => {
+                eprintln!("[send_message] chunk error: {:?}", e);
                 let error_message = "ストリーム中エラーが発生しました".to_string();
                 let _ = app.emit("chat-error", error_message.clone());
                 return Err(error_message);
