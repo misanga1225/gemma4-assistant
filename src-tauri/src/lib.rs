@@ -51,34 +51,28 @@ pub fn run() {
                 if let Ok(Some(monitor)) = mascot.current_monitor() {
                     let screen = monitor.size();
                     let scale = monitor.scale_factor();
-                    let x = (screen.width as f64 / scale) - 220.0;
-                    let y = (screen.height as f64 / scale) - 260.0;
+                    let x = (screen.width as f64 / scale) - 440.0;
+                    let y = (screen.height as f64 / scale) - 410.0;
                     let _ = mascot.set_position(tauri::LogicalPosition::new(x, y));
                 }
             }
 
             // トレイメニュー
-            let show_chat = MenuItemBuilder::with_id("show_chat", "チャットを表示").build(app)?;
             let show_mascot =
                 MenuItemBuilder::with_id("show_mascot", "キャラクターを表示").build(app)?;
             let quit = MenuItemBuilder::with_id("quit", "終了").build(app)?;
             let menu = MenuBuilder::new(app)
-                .items(&[&show_chat, &show_mascot, &quit])
+                .items(&[&show_mascot, &quit])
                 .build()?;
 
             TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)
                 .on_menu_event(|app, event| match event.id().as_ref() {
-                    "show_chat" => {
-                        if let Some(w) = app.get_webview_window("chat") {
-                            let _ = w.show();
-                            let _ = w.set_focus();
-                        }
-                    }
                     "show_mascot" => {
                         if let Some(w) = app.get_webview_window("mascot") {
                             let _ = w.show();
+                            let _ = w.set_focus();
                         }
                     }
                     "quit" => {
@@ -88,7 +82,7 @@ pub fn run() {
                 })
                 .on_tray_icon_event(|tray, event| {
                     if let tauri::tray::TrayIconEvent::Click { .. } = event {
-                        if let Some(w) = tray.app_handle().get_webview_window("chat") {
+                        if let Some(w) = tray.app_handle().get_webview_window("mascot") {
                             let _ = w.show();
                             let _ = w.set_focus();
                         }
@@ -97,14 +91,6 @@ pub fn run() {
                 .build(app)?;
 
             Ok(())
-        })
-        .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                if window.label() == "chat" {
-                    api.prevent_close();
-                    let _ = window.hide();
-                }
-            }
         })
         .invoke_handler(tauri::generate_handler![
             commands::ping_ollama,

@@ -19,6 +19,7 @@ impl Default for PersonalityConfig {
 }
 
 pub fn load_config_from_file(path: &Path) -> PersonalityConfig {
+    eprintln!("[config] loading: {}", path.display());
     match std::fs::read_to_string(path) {
         Ok(content) => serde_json::from_str(&content).unwrap_or_else(|e| {
             eprintln!(

@@ -6,8 +6,15 @@
   <link rel="stylesheet" href="mascot.css" />
 </head>
 <body>
-  <div id="mascot-container">
-    <img id="character-img" src="assets/character/01.png" alt="character" />
+  <div id="mascot-wrapper">
+    <div id="stage">
+      <div id="speech-bubble" class="hidden"></div>
+      <img id="character-img" src="assets/character/01.png" alt="character" />
+    </div>
+    <div id="input-area">
+      <textarea id="input" placeholder="メッセージを入力..." rows="1"></textarea>
+      <button id="send">送信</button>
+    </div>
   </div>
   <script src="mascot.js"></script>
 </body>
