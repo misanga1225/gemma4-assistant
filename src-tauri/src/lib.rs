@@ -1,5 +1,6 @@
 mod commands;
 mod config;
+pub mod voicevox;
 
 use config::PersonalityConfig;
 use ollama_rs::generation::chat::ChatMessage;
@@ -9,12 +10,15 @@ use tauri::{
     tray::TrayIconBuilder,
     Manager,
 };
+use std::sync::Arc;
 use tokio::sync::Mutex;
+use voicevox::VoicevoxClient;
 
 pub struct AppState {
     pub ollama: Ollama,
     pub history: Mutex<Vec<ChatMessage>>,
     pub config: PersonalityConfig,
+    pub voicevox: Arc<Mutex<VoicevoxClient>>,
 }
 
 pub fn run() {
@@ -39,12 +43,24 @@ pub fn run() {
             let config = config::load_config_from_file(&config_path);
             let system_msg = ChatMessage::system(config.system_prompt.clone());
 
+            let vv = Arc::new(Mutex::new(VoicevoxClient::new("http://localhost:50021")));
+
             let state = AppState {
                 ollama: Ollama::new("http://localhost".to_string(), 11434),
                 history: Mutex::new(vec![system_msg]),
                 config,
+                voicevox: vv.clone(),
             };
             app.manage(state);
+
+            // VOICEVOX speaker_id を非同期で解決
+            tauri::async_runtime::spawn(async move {
+                let mut client = vv.lock().await;
+                match client.resolve_speaker_id("きりたん").await {
+                    Ok(id) => eprintln!("[voicevox] speaker_id={}", id),
+                    Err(e) => eprintln!("[voicevox] {}", e),
+                }
+            });
 
             // mascotウィンドウを画面右下に配置
             if let Some(mascot) = app.get_webview_window("mascot") {
