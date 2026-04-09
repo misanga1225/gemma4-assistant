@@ -1,27 +1,24 @@
-use crate::voicevox::VoicevoxClient;
+use crate::tts::TtsEngine;
 use crate::AppState;
 use base64::Engine;
 use futures::StreamExt;
 use ollama_rs::generation::chat::{request::ChatMessageRequest, ChatMessage};
-use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
-use tokio::sync::Mutex;
 
 /// 文の区切り文字で分割するためのヘルパー
 fn is_sentence_end(c: char) -> bool {
     matches!(c, '。' | '！' | '？' | '!' | '?' | '\n')
 }
 
-/// 文が完成したらVOICEVOX合成タスクをspawnする
+/// 文が完成したらTTS合成タスクをspawnする
 fn spawn_synthesis(
-    vv: Arc<Mutex<VoicevoxClient>>,
+    tts: TtsEngine,
     app: AppHandle,
     sentence: String,
     index: usize,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let client = vv.lock().await;
-        match client.synthesize(&sentence).await {
+        match tts.synthesize(&sentence).await {
             Ok(wav_bytes) => {
                 let b64 = base64::engine::general_purpose::STANDARD.encode(&wav_bytes);
                 // index付きで送り、フロントエンドで順序再生
@@ -34,7 +31,7 @@ fn spawn_synthesis(
                 );
             }
             Err(e) => {
-                eprintln!("[voicevox] 文#{} 合成失敗: {}", index, e);
+                eprintln!("[tts] 文#{} 合成失敗: {}", index, e);
             }
         }
     })
@@ -75,11 +72,8 @@ pub async fn send_message(
     let mut full_response = String::new();
     let mut completed = false;
 
-    // 文単位のVOICEVOX合成タスク管理
-    let vv_available = {
-        let vv = state.voicevox.lock().await;
-        vv.speaker_id.is_some()
-    };
+    // 文単位のTTS合成タスク管理
+    let tts_available = state.tts.is_available().await;
     let mut sentence_buf = String::new();
     let mut sentence_index: usize = 0;
     let mut synth_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
@@ -92,14 +86,14 @@ pub async fn send_message(
                     full_response.push_str(token);
                     let _ = app.emit("chat-token", token.clone());
 
-                    // 文単位でVOICEVOX合成をキック
-                    if vv_available {
+                    // 文単位でTTS合成をキック
+                    if tts_available {
                         sentence_buf.push_str(token);
                         if token.chars().any(is_sentence_end) {
                             let sentence = sentence_buf.trim().to_string();
                             if !sentence.is_empty() {
                                 let task = spawn_synthesis(
-                                    state.voicevox.clone(),
+                                    state.tts.clone(),
                                     app.clone(),
                                     sentence,
                                     sentence_index,
@@ -127,11 +121,11 @@ pub async fn send_message(
     }
 
     // 残りのバッファも合成
-    if vv_available {
+    if tts_available {
         let sentence = sentence_buf.trim().to_string();
         if !sentence.is_empty() {
             let task = spawn_synthesis(
-                state.voicevox.clone(),
+                state.tts.clone(),
                 app.clone(),
                 sentence,
                 sentence_index,

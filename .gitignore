@@ -4,8 +4,13 @@ node_modules/
 CLAUDE.md
 personality.json
 
-# テスト用リクエスト
+# テスト用ファイル
 req*.json
+test.wav
+
+# Modal
+modal_app/__pycache__/
+modal_app/ref_wavs/*.wav
 
 # 立ち絵・アイコン（個人素材）
 src/assets/character/*.png

@@ -6,6 +6,14 @@ pub struct PersonalityConfig {
     pub name: String,
     pub model: String,
     pub system_prompt: String,
+    #[serde(default = "default_tts_engine")]
+    pub tts_engine: String,
+    #[serde(default)]
+    pub irodori_url: Option<String>,
+}
+
+fn default_tts_engine() -> String {
+    "voicevox".to_string()
 }
 
 impl Default for PersonalityConfig {
@@ -14,6 +22,8 @@ impl Default for PersonalityConfig {
             name: "アシスタント".to_string(),
             model: "gemma4".to_string(),
             system_prompt: "あなたは優しいアシスタントです。日本語で会話してください。".to_string(),
+            tts_engine: default_tts_engine(),
+            irodori_url: None,
         }
     }
 }
