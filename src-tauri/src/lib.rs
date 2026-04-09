@@ -1,8 +1,11 @@
 mod commands;
 mod config;
+mod irodori;
+pub mod tts;
 pub mod voicevox;
 
 use config::PersonalityConfig;
+use irodori::IrodoriTtsClient;
 use ollama_rs::generation::chat::ChatMessage;
 use ollama_rs::Ollama;
 use tauri::{
@@ -12,13 +15,14 @@ use tauri::{
 };
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tts::TtsEngine;
 use voicevox::VoicevoxClient;
 
 pub struct AppState {
     pub ollama: Ollama,
     pub history: Mutex<Vec<ChatMessage>>,
     pub config: PersonalityConfig,
-    pub voicevox: Arc<Mutex<VoicevoxClient>>,
+    pub tts: TtsEngine,
 }
 
 pub fn run() {
@@ -43,24 +47,40 @@ pub fn run() {
             let config = config::load_config_from_file(&config_path);
             let system_msg = ChatMessage::system(config.system_prompt.clone());
 
-            let vv = Arc::new(Mutex::new(VoicevoxClient::new("http://localhost:50021")));
+            // TTSエンジンの初期化
+            let tts = match config.tts_engine.as_str() {
+                "irodori" => {
+                    let url = config.irodori_url.as_deref().unwrap_or_else(|| {
+                        panic!("tts_engine が 'irodori' の場合、irodori_url の設定が必要です")
+                    });
+                    eprintln!("[tts] engine=irodori url={}", url);
+                    TtsEngine::Irodori(Arc::new(IrodoriTtsClient::new(url)))
+                }
+                _ => {
+                    let vv = Arc::new(Mutex::new(VoicevoxClient::new("http://localhost:50021")));
+                    let vv_clone = vv.clone();
+                    eprintln!("[tts] engine=voicevox");
+
+                    // VOICEVOX speaker_id を非同期で解決
+                    tauri::async_runtime::spawn(async move {
+                        let mut client = vv_clone.lock().await;
+                        match client.resolve_speaker_id("きりたん").await {
+                            Ok(id) => eprintln!("[voicevox] speaker_id={}", id),
+                            Err(e) => eprintln!("[voicevox] {}", e),
+                        }
+                    });
+
+                    TtsEngine::Voicevox(vv)
+                }
+            };
 
             let state = AppState {
                 ollama: Ollama::new("http://localhost".to_string(), 11434),
                 history: Mutex::new(vec![system_msg]),
                 config,
-                voicevox: vv.clone(),
+                tts,
             };
             app.manage(state);
-
-            // VOICEVOX speaker_id を非同期で解決
-            tauri::async_runtime::spawn(async move {
-                let mut client = vv.lock().await;
-                match client.resolve_speaker_id("きりたん").await {
-                    Ok(id) => eprintln!("[voicevox] speaker_id={}", id),
-                    Err(e) => eprintln!("[voicevox] {}", e),
-                }
-            });
 
             // mascotウィンドウを画面右下に配置
             if let Some(mascot) = app.get_webview_window("mascot") {

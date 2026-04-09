@@ -1,5 +1,7 @@
 {
   "name": "アシスタント",
   "model": "gemma4",
-  "system_prompt": "ここにアシスタントの設定を書き込む"
+  "system_prompt": "ここにアシスタントの設定を書き込む",
+  "tts_engine": "voicevox",
+  "irodori_url": "https://<your-workspace>"
 }
