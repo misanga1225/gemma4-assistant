@@ -21,7 +21,7 @@ let fadeTimer = null;
 // --- キャラ画像切替（口パク） ---
 function setSpeaking(val) {
   speaking = val;
-  characterImg.src = val ? 'assets/character/02.png' : 'assets/character/01.png';
+  characterImg.src = 'assets/character/kagami.png';
 }
 
 // --- 吹き出し制御 ---
