@@ -1,3 +1,4 @@
+use crate::browse::{self, BrowseIntent};
 use crate::tts::TtsEngine;
 use crate::AppState;
 use base64::Engine;
@@ -54,13 +55,82 @@ pub async fn send_message(
     message: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let user_msg = ChatMessage::user(message);
-    let request_messages = {
+    let user_msg = ChatMessage::user(message.clone());
+    let mut request_messages = {
         let history = state.history.lock().await;
         let mut messages = history.clone();
         messages.push(user_msg.clone());
         messages
     };
+    // --- ブラウジング前処理 ---
+    let browse_context = if state.config.browse_enabled {
+        match browse::detect_browse_intent(&message) {
+            BrowseIntent::Url(url) => {
+                eprintln!("[browse] URL detected: {}", url);
+                let _ = app.emit(
+                    "browse-status",
+                    serde_json::json!({"status": "fetching", "url": &url}),
+                );
+                match browse::fetch_url(&url).await {
+                    Ok(text) => {
+                        eprintln!("[browse] fetch success: {} chars", text.len());
+                        Some(text)
+                    }
+                    Err(e) => {
+                        eprintln!("[browse] fetch failed: {}", e);
+                        let _ = app.emit(
+                            "browse-status",
+                            serde_json::json!({"status": "error", "message": &e}),
+                        );
+                        None
+                    }
+                }
+            }
+            BrowseIntent::Search(query) => {
+                eprintln!("[browse] search detected: {}", query);
+                let _ = app.emit(
+                    "browse-status",
+                    serde_json::json!({"status": "searching", "query": &query}),
+                );
+                match browse::search_web(&query).await {
+                    Ok(text) => {
+                        eprintln!("[browse] search success: {} chars", text.len());
+                        Some(text)
+                    }
+                    Err(e) => {
+                        eprintln!("[browse] search failed: {}", e);
+                        let _ = app.emit(
+                            "browse-status",
+                            serde_json::json!({"status": "error", "message": &e}),
+                        );
+                        None
+                    }
+                }
+            }
+            BrowseIntent::None => {
+                eprintln!("[browse] no browse intent detected");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    if let Some(context_text) = browse_context {
+        let ctx_msg = ChatMessage::system(format!(
+            "[最重要指示] ユーザーが検索や情報取得を依頼しました。以下のWeb検索結果を必ず参照し、その内容をもとに回答してください。キャラクターとして回答しつつも、検索結果の情報は正確に伝えてください。\n\n[検索結果]\n{}\n[検索結果ここまで]",
+            context_text
+        ));
+        let last = request_messages.pop().unwrap();
+        request_messages.push(ctx_msg);
+        request_messages.push(last);
+        let _ = app.emit(
+            "browse-status",
+            serde_json::json!({"status": "done"}),
+        );
+    }
+    // --- ブラウジング前処理ここまで ---
+
     let request =
         ChatMessageRequest::new(state.config.model.clone(), request_messages).think(false);
     let mut stream = state

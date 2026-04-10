@@ -166,6 +166,17 @@ listen('chat-error', (event) => {
   scheduleFade(5000);
 });
 
+listen('browse-status', (event) => {
+  const { status, query, url, message } = event.payload;
+  if (status === 'searching') {
+    bubble.textContent = `「${query}」を検索中...`;
+  } else if (status === 'fetching') {
+    bubble.textContent = 'ページを読み込み中...';
+  } else if (status === 'error') {
+    bubble.textContent = `検索失敗: ${message || '不明なエラー'}`;
+  }
+});
+
 // --- 入力タブ toggle ---
 const inputArea = document.getElementById('input-area');
 
