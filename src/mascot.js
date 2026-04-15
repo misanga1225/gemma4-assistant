@@ -166,6 +166,50 @@ listen('chat-error', (event) => {
   scheduleFade(5000);
 });
 
+// --- ツール実行確認ダイアログ ---
+const confirmDialog = document.getElementById('tool-confirm-dialog');
+const confirmDetail = document.getElementById('tc-detail');
+const confirmApprove = document.getElementById('tc-approve');
+const confirmCancel = document.getElementById('tc-cancel');
+
+listen('tool-confirm', (event) => {
+  const { tool, action } = event.payload;
+  confirmDetail.textContent = `${tool}\n\n${JSON.stringify(action, null, 2)}`;
+  confirmDialog.classList.remove('hidden');
+  showBubble();
+});
+
+confirmApprove.addEventListener('click', async () => {
+  confirmDialog.classList.add('hidden');
+  sending = true;
+  sendBtn.disabled = true;
+  bubble.textContent = '';
+  bubble.classList.add('loading');
+  resetVoiceQueue();
+  try { await invoke('confirm_tool_call'); }
+  catch (e) { bubble.textContent = 'エラー: ' + e; finishSending(); }
+});
+
+confirmCancel.addEventListener('click', async () => {
+  confirmDialog.classList.add('hidden');
+  sending = true;
+  sendBtn.disabled = true;
+  bubble.textContent = '';
+  bubble.classList.add('loading');
+  resetVoiceQueue();
+  try { await invoke('cancel_tool_call'); }
+  catch (e) { bubble.textContent = 'エラー: ' + e; finishSending(); }
+});
+
+listen('tool-status', (event) => {
+  const { status, tool, ok, message } = event.payload;
+  if (status === 'running') {
+    bubble.textContent = `[${tool}] 実行中...`;
+  } else if (status === 'done') {
+    bubble.textContent = ok ? `[${tool}] 完了: ${message}` : `[${tool}] 失敗: ${message}`;
+  }
+});
+
 listen('browse-status', (event) => {
   const { status, query, url, message } = event.payload;
   if (status === 'searching') {

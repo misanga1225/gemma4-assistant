@@ -1,4 +1,7 @@
 use crate::browse::{self, BrowseIntent};
+use crate::office::types::{EditAction, EditResult};
+use crate::tools::parser;
+use crate::triggers;
 use crate::tts::TtsEngine;
 use crate::AppState;
 use base64::Engine;
@@ -6,12 +9,10 @@ use futures::StreamExt;
 use ollama_rs::generation::chat::{request::ChatMessageRequest, ChatMessage};
 use tauri::{AppHandle, Emitter, State};
 
-/// 文の区切り文字で分割するためのヘルパー
 fn is_sentence_end(c: char) -> bool {
     matches!(c, '。' | '！' | '？' | '!' | '?' | '\n')
 }
 
-/// 文が完成したらTTS合成タスクをspawnする
 fn spawn_synthesis(
     tts: TtsEngine,
     app: AppHandle,
@@ -22,18 +23,12 @@ fn spawn_synthesis(
         match tts.synthesize(&sentence).await {
             Ok(wav_bytes) => {
                 let b64 = base64::engine::general_purpose::STANDARD.encode(&wav_bytes);
-                // index付きで送り、フロントエンドで順序再生
                 let _ = app.emit(
                     "chat-voice",
-                    serde_json::json!({
-                        "index": index,
-                        "audio": b64,
-                    }),
+                    serde_json::json!({ "index": index, "audio": b64 }),
                 );
             }
-            Err(e) => {
-                eprintln!("[tts] 文#{} 合成失敗: {}", index, e);
-            }
+            Err(e) => eprintln!("[tts] 文#{} 合成失敗: {}", index, e),
         }
     })
 }
@@ -49,6 +44,7 @@ pub async fn ping_ollama(state: State<'_, AppState>) -> Result<String, String> {
     }
 }
 
+/// チャット1ターンを実行。tool-callが検出されたらconfirm待ち or 即実行→再chatループ。
 #[tauri::command]
 pub async fn send_message(
     app: AppHandle,
@@ -56,185 +52,275 @@ pub async fn send_message(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let user_msg = ChatMessage::user(message.clone());
-    let mut request_messages = {
-        let history = state.history.lock().await;
-        let mut messages = history.clone();
-        messages.push(user_msg.clone());
-        messages
-    };
-    // --- ブラウジング前処理 ---
+    {
+        let mut hist = state.history.lock().await;
+        hist.push(user_msg);
+    }
+
+    // キーワードトリガーを先に評価
+    if state.config.office_enabled {
+        if let Some(action) = triggers::evaluate(&message, &state.config.triggers) {
+            eprintln!("[triggers] matched: {}", action.tool_name());
+            return handle_tool_action(&app, &state, action).await;
+        }
+    }
+
+    // ブラウジング前処理（既存のまま、ただしuser_msgはhistory末尾に入っている）
     let browse_context = if state.config.browse_enabled {
         match browse::detect_browse_intent(&message) {
             BrowseIntent::Url(url) => {
-                eprintln!("[browse] URL detected: {}", url);
-                let _ = app.emit(
-                    "browse-status",
-                    serde_json::json!({"status": "fetching", "url": &url}),
-                );
+                let _ = app.emit("browse-status", serde_json::json!({"status": "fetching", "url": &url}));
                 match browse::fetch_url(&url).await {
-                    Ok(text) => {
-                        eprintln!("[browse] fetch success: {} chars", text.len());
-                        Some(text)
-                    }
+                    Ok(t) => Some(t),
                     Err(e) => {
-                        eprintln!("[browse] fetch failed: {}", e);
-                        let _ = app.emit(
-                            "browse-status",
-                            serde_json::json!({"status": "error", "message": &e}),
-                        );
+                        let _ = app.emit("browse-status", serde_json::json!({"status": "error", "message": &e}));
                         None
                     }
                 }
             }
             BrowseIntent::Search(query) => {
-                eprintln!("[browse] search detected: {}", query);
-                let _ = app.emit(
-                    "browse-status",
-                    serde_json::json!({"status": "searching", "query": &query}),
-                );
+                let _ = app.emit("browse-status", serde_json::json!({"status": "searching", "query": &query}));
                 match browse::search_web(&query).await {
-                    Ok(text) => {
-                        eprintln!("[browse] search success: {} chars", text.len());
-                        Some(text)
-                    }
+                    Ok(t) => Some(t),
                     Err(e) => {
-                        eprintln!("[browse] search failed: {}", e);
-                        let _ = app.emit(
-                            "browse-status",
-                            serde_json::json!({"status": "error", "message": &e}),
-                        );
+                        let _ = app.emit("browse-status", serde_json::json!({"status": "error", "message": &e}));
                         None
                     }
                 }
             }
-            BrowseIntent::None => {
-                eprintln!("[browse] no browse intent detected");
-                None
-            }
+            BrowseIntent::None => None,
         }
     } else {
         None
     };
 
-    if let Some(context_text) = browse_context {
+    if let Some(ctx) = browse_context {
         let ctx_msg = ChatMessage::system(format!(
-            "[最重要指示] ユーザーが検索や情報取得を依頼しました。以下のWeb検索結果を必ず参照し、その内容をもとに回答してください。キャラクターとして回答しつつも、検索結果の情報は正確に伝えてください。\n\n[検索結果]\n{}\n[検索結果ここまで]",
-            context_text
+            "[最重要指示] ユーザーが検索や情報取得を依頼しました。以下のWeb検索結果を必ず参照し、その内容をもとに回答してください。\n\n[検索結果]\n{}\n[検索結果ここまで]",
+            ctx
         ));
-        let last = request_messages.pop().unwrap();
-        request_messages.push(ctx_msg);
-        request_messages.push(last);
-        let _ = app.emit(
-            "browse-status",
-            serde_json::json!({"status": "done"}),
-        );
+        let mut hist = state.history.lock().await;
+        let last = hist.pop().unwrap();
+        hist.push(ctx_msg);
+        hist.push(last);
+        let _ = app.emit("browse-status", serde_json::json!({"status": "done"}));
     }
-    // --- ブラウジング前処理ここまで ---
 
-    let request =
-        ChatMessageRequest::new(state.config.model.clone(), request_messages).think(false);
+    run_chat_turn(&app, &state, 0).await
+}
+
+/// 1回のchatラウンド。tool-callを検出したら再帰的に次ラウンドを回す。
+async fn run_chat_turn(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    depth: u32,
+) -> Result<(), String> {
+    if depth >= state.config.max_tool_calls_per_turn {
+        let _ = app.emit("chat-error", "ツール呼び出し上限に達しました".to_string());
+        return Err("ツール呼び出し上限".into());
+    }
+
+    let request_messages = { state.history.lock().await.clone() };
+    let request = ChatMessageRequest::new(state.config.model.clone(), request_messages).think(false);
+
     let mut stream = state
         .ollama
         .send_chat_messages_stream(request)
         .await
         .map_err(|e| format!("ストリームエラー: {}", e))?;
 
-    let mut full_response = String::new();
+    let mut full = String::new();
     let mut completed = false;
 
-    // 文単位のTTS合成タスク管理
-    let tts_available = state.tts.is_available().await;
+    let tts_on = state.tts.is_available().await;
     let mut sentence_buf = String::new();
-    let mut sentence_index: usize = 0;
-    let mut synth_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+    let mut sent_idx: usize = 0;
+    let mut synth_tasks = Vec::new();
+    let mut in_tool_block = false;
 
     while let Some(chunk) = stream.next().await {
         match chunk {
             Ok(res) => {
                 let token = &res.message.content;
                 if !token.is_empty() {
-                    full_response.push_str(token);
-                    let _ = app.emit("chat-token", token.clone());
+                    full.push_str(token);
 
-                    // 文単位でTTS合成をキック
-                    if tts_available {
-                        sentence_buf.push_str(token);
-                        if token.chars().any(is_sentence_end) {
-                            let sentence = sentence_buf.trim().to_string();
-                            if !sentence.is_empty() {
-                                let task = spawn_synthesis(
-                                    state.tts.clone(),
-                                    app.clone(),
-                                    sentence,
-                                    sentence_index,
-                                );
-                                synth_tasks.push(task);
-                                sentence_index += 1;
+                    // tool-callブロック開始検出: バックティック + tool/json 宣言が出たら以降のtokenをユーザーに出さない
+                    if !in_tool_block && (full.contains("```tool") || full.contains("```json") || full.contains("<tool_call>")) {
+                        in_tool_block = true;
+                    }
+
+                    if !in_tool_block {
+                        let _ = app.emit("chat-token", token.clone());
+                        if tts_on {
+                            sentence_buf.push_str(token);
+                            if token.chars().any(is_sentence_end) {
+                                let s = sentence_buf.trim().to_string();
+                                if !s.is_empty() {
+                                    synth_tasks.push(spawn_synthesis(
+                                        state.tts.clone(), app.clone(), s, sent_idx,
+                                    ));
+                                    sent_idx += 1;
+                                }
+                                sentence_buf.clear();
                             }
-                            sentence_buf.clear();
                         }
                     }
                 }
-
-                if res.done {
-                    completed = true;
-                    break;
-                }
+                if res.done { completed = true; break; }
             }
             Err(e) => {
                 eprintln!("[send_message] chunk error: {:?}", e);
-                let error_message = "ストリーム中エラーが発生しました".to_string();
-                let _ = app.emit("chat-error", error_message.clone());
-                return Err(error_message);
+                let _ = app.emit("chat-error", "ストリーム中エラー".to_string());
+                return Err("ストリームエラー".into());
             }
-        }
-    }
-
-    // 残りのバッファも合成
-    if tts_available {
-        let sentence = sentence_buf.trim().to_string();
-        if !sentence.is_empty() {
-            let task = spawn_synthesis(
-                state.tts.clone(),
-                app.clone(),
-                sentence,
-                sentence_index,
-            );
-            synth_tasks.push(task);
         }
     }
 
     if !completed {
-        let error_message = "応答ストリームが途中で終了しました".to_string();
-        let _ = app.emit("chat-error", error_message.clone());
-        return Err(error_message);
+        let _ = app.emit("chat-error", "応答が途中で終了".to_string());
+        return Err("応答が途中で終了".into());
     }
 
+    // tool-call抽出
+    let tool_call = parser::extract_tool_call(&full);
+    let visible = parser::strip_tool_call(&full);
+
+    // 履歴にassistantメッセージを記録（ツールコール含む生出力）
     {
-        let mut history = state.history.lock().await;
-        history.push(user_msg);
-        history.push(ChatMessage::assistant(full_response));
+        let mut hist = state.history.lock().await;
+        hist.push(ChatMessage::assistant(full.clone()));
     }
 
-    // 合成完了通知（文の総数をフロントエンドに伝える）
+    // 残sentence合成（ツールブロックがなかった場合のみ）
+    if tool_call.is_none() && tts_on {
+        let s = sentence_buf.trim().to_string();
+        if !s.is_empty() {
+            synth_tasks.push(spawn_synthesis(state.tts.clone(), app.clone(), s, sent_idx));
+        }
+    }
+
+    if let Some(action) = tool_call {
+        eprintln!("[tool] detected: {}", action.tool_name());
+        // tool実行中はTTSをキャンセル（中途半端な音声を残さない）
+        for t in synth_tasks { t.abort(); }
+        // 見える本文があれば先に出す
+        if !visible.is_empty() {
+            let _ = app.emit("chat-token", visible);
+        }
+        return Box::pin(handle_tool_action(app, state, action)).await;
+    }
+
     let _ = app.emit(
         "chat-complete",
-        serde_json::json!({
-            "voice_count": synth_tasks.len(),
-        }),
+        serde_json::json!({ "voice_count": synth_tasks.len() }),
     );
-
-    // 合成タスクの完了を待つ（emitは各タスク内で行われる）
-    for task in synth_tasks {
-        let _ = task.await;
-    }
-
+    for t in synth_tasks { let _ = t.await; }
     Ok(())
+}
+
+/// tool-callを確認ダイアログ経由 or 即実行する。
+async fn handle_tool_action(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    action: EditAction,
+) -> Result<(), String> {
+    if state.config.require_confirmation {
+        {
+            let mut pending = state.pending_tool.lock().await;
+            *pending = Some(action.clone());
+        }
+        let _ = app.emit(
+            "tool-confirm",
+            serde_json::json!({
+                "tool": action.tool_name(),
+                "action": &action,
+            }),
+        );
+        let _ = app.emit("chat-complete", serde_json::json!({ "voice_count": 0 }));
+        return Ok(());
+    }
+    execute_and_continue(app, state, action, 0).await
+}
+
+async fn execute_and_continue(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    action: EditAction,
+    depth: u32,
+) -> Result<(), String> {
+    let _ = app.emit("tool-status", serde_json::json!({"status": "running", "tool": action.tool_name()}));
+    let result: EditResult = {
+        let editor = state.office.lock().await;
+        editor.execute(&action).await
+    };
+    let _ = app.emit("tool-status", serde_json::json!({"status": "done", "ok": result.ok, "message": &result.message}));
+
+    // 結果をsystem messageとして履歴に追加 → 再chat
+    let result_json = serde_json::to_string(&result).unwrap_or_default();
+    {
+        let mut hist = state.history.lock().await;
+        hist.push(ChatMessage::system(format!(
+            "[ツール実行結果] tool={} result={}",
+            action.tool_name(),
+            result_json
+        )));
+    }
+    Box::pin(run_chat_turn(app, state, depth + 1)).await
+}
+
+#[tauri::command]
+pub async fn confirm_tool_call(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let action = {
+        let mut pending = state.pending_tool.lock().await;
+        pending.take()
+    };
+    match action {
+        Some(a) => execute_and_continue(&app, &state, a, 0).await,
+        None => Err("保留中のtool-callがありません".into()),
+    }
+}
+
+#[tauri::command]
+pub async fn cancel_tool_call(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    {
+        let mut pending = state.pending_tool.lock().await;
+        *pending = None;
+    }
+    let mut hist = state.history.lock().await;
+    hist.push(ChatMessage::system("[ツール実行キャンセル] ユーザーが拒否しました。自然に会話に戻ってください。".into()));
+    drop(hist);
+    run_chat_turn(&app, &state, 0).await
+}
+
+#[tauri::command]
+pub async fn undo_last_edit(
+    state: State<'_, AppState>,
+    target: String,
+) -> Result<String, String> {
+    let editor = state.office.lock().await;
+    let restored = editor.undo(&target)?;
+    Ok(format!("復元元: {}", restored.display()))
 }
 
 #[tauri::command]
 pub async fn get_config(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let avail = {
+        let ed = state.office.lock().await;
+        ed.available.clone()
+    };
     Ok(serde_json::json!({
         "name": state.config.name,
+        "office": {
+            "word": avail.word,
+            "excel": avail.excel,
+            "powerpoint": avail.powerpoint,
+        }
     }))
 }
