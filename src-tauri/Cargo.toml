@@ -21,3 +21,8 @@ reqwest = { version = "0.12", features = ["json"] }
 base64 = "0.22"
 scraper = "0.22"
 regex = "1"
+chrono = { version = "0.4", features = ["clock"] }
+
+[target.'cfg(windows)'.dependencies]
+# Office COM automation はPowerShell経由で実行する（実装を軽くするため）。
+# 将来 windows-rs の IDispatch に置き換えても良い。
